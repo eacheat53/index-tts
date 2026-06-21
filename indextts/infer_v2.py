@@ -91,11 +91,10 @@ class IndexTTS2:
         self.gpt = UnifiedVoice(**self.cfg.gpt, use_accel=self.use_accel)
         self.gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
         load_checkpoint(self.gpt, self.gpt_path)
-        self.gpt = self.gpt.to(self.device)
         if self.use_fp16:
-            self.gpt.eval().half()
-        else:
-            self.gpt.eval()
+            self.gpt = self.gpt.half()
+        self.gpt = self.gpt.to(self.device)
+        self.gpt.eval()
         print(">> GPT weights restored from:", self.gpt_path)
 
         if use_deepspeed:
@@ -124,10 +123,11 @@ class IndexTTS2:
         self.semantic_model, self.semantic_mean, self.semantic_std = build_semantic_model(
             os.path.join(self.model_dir, self.cfg.w2v_stat),
             model_path=w2v_bert_dir)
-        self.semantic_model = self.semantic_model.to(self.device)
+        # Keep semantic_model on CPU to save ~2.4GB VRAM
+        self.semantic_model = self.semantic_model.to("cpu")
         self.semantic_model.eval()
-        self.semantic_mean = self.semantic_mean.to(self.device)
-        self.semantic_std = self.semantic_std.to(self.device)
+        self.semantic_mean = self.semantic_mean.to("cpu")
+        self.semantic_std = self.semantic_std.to("cpu")
 
         semantic_codec = build_semantic_codec(self.cfg.semantic_codec)
         semantic_code_ckpt = aux_paths["semantic_codec"]
@@ -445,11 +445,9 @@ class IndexTTS2:
             audio_16k = torchaudio.transforms.Resample(sr, 16000)(audio)
 
             inputs = self.extract_features(audio_16k, sampling_rate=16000, return_tensors="pt")
-            input_features = inputs["input_features"]
-            attention_mask = inputs["attention_mask"]
-            input_features = input_features.to(self.device)
-            attention_mask = attention_mask.to(self.device)
-            spk_cond_emb = self.get_emb(input_features, attention_mask)
+            input_features = inputs["input_features"].to("cpu")
+            attention_mask = inputs["attention_mask"].to("cpu")
+            spk_cond_emb = self.get_emb(input_features, attention_mask).to(self.device)
 
             _, S_ref = self.semantic_codec.quantize(spk_cond_emb)
             ref_mel = self.mel_fn(audio_22k.to(spk_cond_emb.device).float())
@@ -496,11 +494,9 @@ class IndexTTS2:
                 torch.cuda.empty_cache()
             emo_audio, _ = self._load_and_cut_audio(emo_audio_prompt,15,verbose,sr=16000)
             emo_inputs = self.extract_features(emo_audio, sampling_rate=16000, return_tensors="pt")
-            emo_input_features = emo_inputs["input_features"]
-            emo_attention_mask = emo_inputs["attention_mask"]
-            emo_input_features = emo_input_features.to(self.device)
-            emo_attention_mask = emo_attention_mask.to(self.device)
-            emo_cond_emb = self.get_emb(emo_input_features, emo_attention_mask)
+            emo_input_features = emo_inputs["input_features"].to("cpu")
+            emo_attention_mask = emo_inputs["attention_mask"].to("cpu")
+            emo_cond_emb = self.get_emb(emo_input_features, emo_attention_mask).to(self.device)
 
             self.cache_emo_cond = emo_cond_emb
             self.cache_emo_audio_prompt = emo_audio_prompt
@@ -730,8 +726,8 @@ class QwenEmotion:
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir)
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_dir,
-            torch_dtype="float16",  # "auto"
-            device_map="auto"
+            torch_dtype=torch.float32,
+            device_map="cpu"
         )
         self.prompt = "文本情感分类"
         self.cn_key_to_en = {
